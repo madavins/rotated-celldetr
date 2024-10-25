@@ -1,8 +1,8 @@
 name: deformable_detr
 num_queries: 900
 postprocess: label_topk
-with_box_refine: True
-two_stage: True
+with_box_refine: False
+two_stage: False
 hidden_dim: 256
 num_feature_levels: 4
 aux_loss: True

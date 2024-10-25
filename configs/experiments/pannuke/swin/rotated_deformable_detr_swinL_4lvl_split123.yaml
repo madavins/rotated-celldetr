@@ -1,8 +1,8 @@
 experiment:
   wandb: True
-  project: deformable_celldetr
-  name: defdetr_swinL_4lvl_split123
-  output_dir: ./
+  project: deformable_rotated_celldetr
+  name: rotateddetr_swinL_4lvl_split123_no_boxrefine_no_twostage
+  output_dir: /home/usuaris/imatge/manel.davins/celldetr/models/celldetr/rotated_detr
   output_name: defdetr_swinL_4lvl_split123.pth
   seed: 42
   resume: False
@@ -23,14 +23,16 @@ dataset:
     fold: fold3
 transforms:
   augmentations:
-    __file__: configs/base/data/augmentations/orient_geo_hed.yaml
+    __file__: configs/base/data/augmentations/orient_geo_hed_rotated.yaml
   normalize:
     __file__: configs/base/data/normalize/pannuke_1.yaml
 model:
   __file__: configs/base/model/detr/deformable_detr_4lvl.yaml
+  checkpoint: /mnt/gpid08/users/oscar.pina/models/deformable_detr/deformable_detr_resnet50_wbr_2s_coco.pth
   num_classes: 5
   backbone:
     __file__: configs/base/model/backbone/swinL_4lvl.yaml
+    checkpoint: /mnt/gpid08/users/oscar.pina/models/dino/dino_4scale_swinL_coco.pth
 optimizer:
   epochs: 100
   weight_decay: 0.0001
