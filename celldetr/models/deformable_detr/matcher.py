@@ -92,9 +92,6 @@ class HungarianMatcher(nn.Module):
             Sigma_tgt = moments_to_cov(denorm_tgt_moments[:, 2:])
 
             cost_kl = kl_divergence_batched(mu_src, Sigma_src, mu_tgt, Sigma_tgt)
-            #TODO: Check if this is the right way to handle NaNs and Infs
-            # IMPROVISATION: Substitute invalid values from the kl_cost matrix to high penalty value (100)
-            cost_kl[cost_kl.isnan() | cost_kl.isinf()] = 1000
 
             # Final cost matrix
             C = self.cost_moments * cost_moments + self.cost_class * cost_class + self.cost_kl * cost_kl

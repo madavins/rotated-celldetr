@@ -334,10 +334,6 @@ class SetCriterion(nn.Module):
         kl_divergences = [moment_ops.kl_divergence(mu_src[i], Sigma_src[i], mu_tgt[i], Sigma_tgt[i]) 
                                     for i in range(mu_src.shape[0])]
         
-        if not kl_divergences:
-            print("WARNING! We should have a non-empty tensor list ")
-            return torch.tensor(0.0, device=src_moments.device)
-        
         kl_divergences = torch.stack(kl_divergences)
         loss_kl = kl_divergences.sum() / num_boxes
 

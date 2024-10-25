@@ -84,78 +84,104 @@ def moments_to_cov(moments):
     cov_matrices[:, 0, 1] = cov_matrices[:, 1, 0] = mu11
     return cov_matrices
 
-def kl_divergence(mu0, Sigma0, mu1, Sigma1):
+def kl_divergence(mu0, Sigma0, mu1, Sigma1, verbose=False):
     """
     Compute the KL divergence between two multivariate Gaussian distributions.
     
     Parameters:
-    - mu0: Mean vector of the first Gaussian distribution. Predicted moments.
-    - Sigma0: Covariance matrix of the first Gaussian distribution. Predicted moments.
-    - mu1: Mean vector of the second Gaussian distribution. Target moments.
-    - Sigma1: Covariance matrix of the second Gaussian distribution. Target moments.
+    - mu0, mu1: Mean vectors (predicted and target)
+    - Sigma0, Sigma1: Covariance matrices (predicted and target)
+    - verbose: Whether to print detailed debugging information
     
     Returns:
-    - KL divergence between the two distributions.
+    - KL divergence between the distributions, or None if computation is invalid
     """
-
-    epsilon = 1e-4  # Small value to add to the diagonal of Sigma1
-    Sigma1 = Sigma1 + torch.eye(2, device=Sigma1.device) * epsilon 
-    Sigma0 = Sigma0 + torch.eye(2, device=Sigma0.device) * epsilon 
+    
+    epsilon = 1e-4
+    d = 2 # 2D Gaussian
+    Sigma1 = Sigma1 + torch.eye(2, device=Sigma1.device) * epsilon
+    Sigma0 = Sigma0 + torch.eye(2, device=Sigma0.device) * epsilon
+    
+    # Check positive definiteness
+    eigvals0 = torch.linalg.eigvalsh(Sigma0)
+    eigvals1 = torch.linalg.eigvalsh(Sigma1)
+    
+    if (eigvals0 <= 0).any() or (eigvals1 <= 0).any():
+        print(f"Non-positive definite matrix encountered: {eigvals0}, {eigvals1}")
+        return torch.tensor([[100.0]], device=mu0.device, requires_grad=True) # Arbitrary large loss value in case the model predicts invalid values
+        
+    # Regular KL calculation
     Sigma1_inv = torch.linalg.inv(Sigma1)
     term1 = torch.trace(Sigma1_inv @ Sigma0)
-    diff = (mu1 - mu0).unsqueeze(-1) / 256 # Rescale to avoid numerical issues
+    diff = (mu1 - mu0).unsqueeze(-1) / 256 # Normalize by image size
     term2 = diff.T @ Sigma1_inv @ diff
     term3 = torch.log(torch.linalg.det(Sigma1) / torch.linalg.det(Sigma0))
-
-    kl_div = 0.5 * (term1 + term2 + term3 - 2)
     
+    kl_div = 0.5 * (term1 + term2 + term3 - d)
     return kl_div
     
 def kl_divergence_batched(mu0, Sigma0, mu1, Sigma1):
     """
-    Compute the batched KL divergence between sets of Gaussian distributions.
+    Compute the batched KL divergence between sets of Gaussian distributions with proper error handling.
     
     Parameters:
-    - mu0: Tensor of shape [n, 2] - Mean vectors of n source Gaussians.
-    - Sigma0: Tensor of shape [n, 2, 2] - Covariance matrices of source Gaussians.
-    - mu1: Tensor of shape [m, 2] - Mean vectors of m target Gaussians.
-    - Sigma1: Tensor of shape [m, 2, 2] - Covariance matrices of target Gaussians.
-    - epsilon: Small regularization term to ensure covariance matrices are invertible.
+    - mu0: Tensor of shape [n, 2] - Mean vectors of n predicted Gaussians
+    - Sigma0: Tensor of shape [n, 2, 2] - Covariance matrices of predicted Gaussians
+    - mu1: Tensor of shape [m, 2] - Mean vectors of m target Gaussians
+    - Sigma1: Tensor of shape [m, 2, 2] - Covariance matrices of target Gaussians
     
     Returns:
-    - A matrix of shape [n, m] containing KL divergences between each pair (i, j).
+    - A matrix of shape [n, m] containing KL divergences or penalty values
     """
-    epsilon=1e-4
-    n, d = mu0.shape # d=2 
+    epsilon = 1e-4
+    n, d = mu0.shape  # d=2 2D Gaussian
     m, _ = mu1.shape
-
-    # Regularize the covariance matrices to ensure they are invertible
+    
+    # Initialize cost matrix with high penalty value (1000.0) for all pairs
+    # This ensures that invalid/problematic pairs will be discouraged in the matching process
+    kl_matrix = torch.full((n, m), 1000.0, device=mu0.device)
+    
+    # Regularize the covariance matrices
     Sigma1 = Sigma1 + torch.eye(d, device=Sigma1.device) * epsilon
     Sigma0 = Sigma0 + torch.eye(d, device=Sigma0.device) * epsilon
-
-    # Invert Sigma1 once since it's for targets and calculate determinant
-    Sigma1_inv = torch.linalg.inv(Sigma1)  # Shape [m, 2, 2]
-    det_Sigma1 = torch.linalg.det(Sigma1)  # Shape [m]
-
-    #Repeat the tensor of sigma_1s n times adapting it's dimensions to make
-    # a 1 to 1 comparison with the tensor of sigma_0s.
-    Sigma1_inv_expanded = Sigma1_inv.unsqueeze(0).expand(n, m, d, d) 
-
-    #TERM 1: trace(Sigma_1_inv * Sigma_0)
-    #Tensor of sigma_0s is also expanded to adapt its dimensionality.
-    product = torch.matmul(Sigma1_inv_expanded, Sigma0.unsqueeze(1).expand(n, m, d, d)) #[n, m, 2, 2]
-    term1 = torch.diagonal(product, dim1=-2, dim2=-1).sum(-1) #[n, m]
-
-    #TERM 2: Mahalanobis distance
-    diff = (mu1.unsqueeze(0) - mu0.unsqueeze(1)) / 256 #[n, m, 2]
-    intermediate = torch.matmul(diff.unsqueeze(-2), Sigma1_inv_expanded) #[n, m, 1, 2]
-    term2 = torch.matmul(intermediate, diff.unsqueeze(-1)).squeeze(-1).squeeze(-1) #[n, m, 1, 1] -> [n, m]
-
-    #TERM 3: ln(det(sigma_1) / det(sigma_0))
+    
+    # Check positive definiteness for all matrices
+    eigvals0 = torch.linalg.eigvalsh(Sigma0)  # [n, 2]
+    eigvals1 = torch.linalg.eigvalsh(Sigma1)  # [m, 2]
+    
+    # Create masks for valid matrices
+    valid_sigma0 = (eigvals0 > 0).all(dim=-1)  # [n]
+    valid_sigma1 = (eigvals1 > 0).all(dim=-1)  # [m]
+    
+    # Compute inverse of Sigma1 only for valid matrices
+    Sigma1_inv = torch.zeros_like(Sigma1)
+    Sigma1_inv[valid_sigma1] = torch.linalg.inv(Sigma1[valid_sigma1])
+    
+    # Expand dimensions for broadcasting
+    Sigma1_inv_expanded = Sigma1_inv.unsqueeze(0).expand(n, m, d, d)
+    
+    # Term 1: trace(Sigma1_inv @ Sigma0)
+    product = torch.matmul(Sigma1_inv_expanded, Sigma0.unsqueeze(1).expand(n, m, d, d)) # [n, m, 2, 2]
+    term1 = torch.diagonal(product, dim1=-2, dim2=-1).sum(-1) # [n, m, 2, 2]
+    
+    # Term 2: Mahalanobis distance
+    diff = (mu1.unsqueeze(0) - mu0.unsqueeze(1)) / 256 # [n, m, 2]
+    intermediate = torch.matmul(diff.unsqueeze(-2), Sigma1_inv_expanded) # [n, m, 1, 2]
+    term2 = torch.matmul(intermediate, diff.unsqueeze(-1)).squeeze(-1).squeeze(-1) # [n, m]
+    
+    # Term 3: log(det(Sigma1)/det(Sigma0)) ensuring positive determinants
     det_Sigma0 = torch.linalg.det(Sigma0)
-    term3 = torch.log(det_Sigma1.unsqueeze(0) / det_Sigma0.unsqueeze(1))
+    det_Sigma1 = torch.linalg.det(Sigma1)
+    valid_dets = (det_Sigma0 > 0).unsqueeze(1) & (det_Sigma1 > 0).unsqueeze(0)
 
-    #Final computation -> number of dimensions of the gaussian distribution is 
-    # substracted to make the divergence invariant to the number of dimensions
-    kl_matrix = 0.5 * (term1 + term2 + term3 - d)
+    term3 = torch.zeros_like(term1) # [n, m]
+    term3[valid_dets] = torch.log(
+        det_Sigma1.unsqueeze(0).expand(n, m)[valid_dets] / 
+        det_Sigma0.unsqueeze(1).expand(n, m)[valid_dets]
+    )
+    
+    # Compute KL divergence
+    valid_pairs = valid_sigma0.unsqueeze(1) & valid_sigma1.unsqueeze(0)
+    kl_matrix[valid_pairs] = 0.5 * (term1[valid_pairs] + term2[valid_pairs] + term3[valid_pairs] - d)
+    
     return kl_matrix
