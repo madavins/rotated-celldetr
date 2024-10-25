@@ -37,7 +37,6 @@ def load_state_dict(cfg, model):
         # get number of keys in checkpoint
         num_ckpt_keys = len(checkpoint)
 
-        # load checkpoint of the entire model
         if cfg.model.name == 'deformable_detr':
             print("Loading checkpoint for deformable DETR...")
             from .deformable_detr import load_sd_deformable_detr

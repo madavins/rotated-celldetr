@@ -27,8 +27,8 @@ def build_deformable_detr(cfg, backbone):
     assert cfg.matcher.name == 'HungarianMatcher', "Currently only HungarianMatcher is supported"
     matcher = build_matcher(cfg)
     weight_dict = {'loss_ce': cfg.loss.class_coef, 
-                   'loss_bbox': cfg.loss.bbox_coef,
-                   'loss_giou': cfg.loss.giou_coef}
+                   'loss_moments_l1': cfg.loss.moments_coef,
+                   'loss_moments_kl': cfg.loss.kl_coef}
     
     if 'masks' in cfg.model and cfg.model.masks:
         raise NotImplementedError("Mask head not implemented")
@@ -43,14 +43,14 @@ def build_deformable_detr(cfg, backbone):
         aux_weight_dict.update({k + f'_enc': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
-    losses = ['labels', 'boxes', 'cardinality']
+    losses = ['labels', 'moments', 'cardinality']
     if 'masks' in cfg.model and cfg.model.masks:
         raise NotImplementedError("Mask head not implemented")
         #losses += ["masks"]
     
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
     criterion = SetCriterion(num_classes, matcher, weight_dict, losses, focal_alpha=cfg.loss.focal_alpha)
-    postprocessors = {'bbox': PostProcess(cfg.model.postprocess)}
+    postprocessors = {'moments': PostProcess(cfg.model.postprocess)}
     
     if 'masks' in cfg.model and cfg.model.masks:
         raise NotImplementedError("Mask head not implemented")
@@ -61,6 +61,30 @@ def build_deformable_detr(cfg, backbone):
 
     return model, criterion, postprocessors
 
+def modify_checkpoint_for_moments(checkpoint):
+    """
+    Adjusts checkpoint parameters for the moments-based bbox_embed layers.
+    """
+    new_checkpoint = {}
+    for key, value in checkpoint.items():
+        # Adjust the bbox_embed layers that have changed due to moments addition
+        if 'bbox_embed' in key and ('layers.2.weight' in key or 'layers.2.bias' in key):
+            new_value = value  # Start with the original value
+            if 'weight' in key:
+                # Adjust weight dimensions for moments ([5, 256] for example)
+                new_shape = (5, value.size(1))  # Ensure 2D shape for weights
+                new_value = torch.empty(new_shape)
+                torch.nn.init.xavier_uniform_(new_value)  # Re-initialize
+            elif 'bias' in key:
+                # Adjust bias to match moments dimension (5,)
+                new_shape = (5,)
+                new_value = torch.zeros(new_shape)  # Bias can be initialized to zeros
+            new_checkpoint[key] = new_value
+        else:
+            # Keep unchanged parameters as is
+            new_checkpoint[key] = value
+    return new_checkpoint
+
 def load_sd_deformable_detr(model, checkpoint):
     # get model, if checkpoint is a dict
     if 'model' in checkpoint:
@@ -68,8 +92,11 @@ def load_sd_deformable_detr(model, checkpoint):
     # remove class_embed from checkpoint
     checkpoint = {k: v for k, v in checkpoint.items() if 'class_embed' not in k}
 
-    print(f"\t loading deformable detr with {len(checkpoint)} keys...")
+    # Modify the checkpoint to accommodate moment-based bbox_embed layers
+    modified_checkpoint = modify_checkpoint_for_moments(checkpoint)
+
+    print(f"\t Loading deformable detr (adapted for moments) with {len(modified_checkpoint)} keys...")
     # load state dict
-    missing_keys, unexpected_keys = model.load_state_dict(checkpoint, strict=False)
-    print(f"\t # model keys: {len(model.state_dict().keys())}, # checkpoint keys: {len(checkpoint.keys())}")
+    missing_keys, unexpected_keys = model.load_state_dict(modified_checkpoint, strict=False)
+    print(f"\t # model keys: {len(model.state_dict().keys())}, # checkpoint keys: {len(modified_checkpoint.keys())}")
     print(f"\t # missing keys: {len(missing_keys)}, # unexpected keys: {len(unexpected_keys)}")

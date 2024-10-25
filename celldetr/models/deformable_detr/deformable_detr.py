@@ -16,12 +16,15 @@ from torch import nn
 import math
 
 from ...util import box_ops
+from ...util import moment_ops
 from ...util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, interpolate, inverse_sigmoid)
 from ...util.distributed import get_world_size, is_dist_avail_and_initialized
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 import copy
+
+from ...util.constants import MOMENT_MIN_VALUES, MOMENT_MAX_VALUES
 
 
 def _get_clones(module, N):
@@ -49,7 +52,7 @@ class DeformableDETR(nn.Module):
         self.transformer = transformer
         hidden_dim = transformer.d_model
         self.class_embed = nn.Linear(hidden_dim, num_classes)
-        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        self.bbox_embed = MLP(hidden_dim, hidden_dim, 5, 3) #Modified to learn image moments!
         self.num_feature_levels = num_feature_levels
         if not two_stage:
             self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
@@ -174,7 +177,7 @@ class DeformableDETR(nn.Module):
         outputs_class = torch.stack(outputs_classes)
         outputs_coord = torch.stack(outputs_coords)
 
-        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
+        out = {'pred_logits': outputs_class[-1], 'pred_moments': outputs_coord[-1]} #MOD!
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
 
@@ -188,7 +191,7 @@ class DeformableDETR(nn.Module):
         # this is a workaround to make torchscript happy, as torchscript
         # doesn't support dictionary with non-homogeneous values, such
         # as a dict having both a Tensor and a list.
-        return [{'pred_logits': a, 'pred_boxes': b}
+        return [{'pred_logits': a, 'pred_moments': b}
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
 
@@ -274,6 +277,71 @@ class SetCriterion(nn.Module):
             box_ops.box_cxcywh_to_xyxy(target_boxes)))
         losses['loss_giou'] = loss_giou.sum() / num_boxes
         return losses
+    
+    def loss_moments(self, outputs, targets, indices, num_boxes):
+        """ Compute the losses related to the moments: regression (L1) and KL divergence.
+        """
+        assert 'pred_moments' in outputs
+        losses = {}
+        losses['loss_moments_l1'] = self.loss_moments_regression(outputs, targets, indices, num_boxes)
+        losses['loss_moments_kl'] = self.loss_moments_kl(outputs, targets, indices, num_boxes)
+        return losses
+    
+    def loss_moments_regression(self, outputs, targets, indices, num_boxes):
+        """Compute the regression losses for the moments.
+        targets dicts must contain the key "moments" containing a tensor of dim [nb_target_boxes, 5]
+        with each row being [cx, cy, mu11, mu20, mu02].
+        """
+        assert 'pred_moments' in outputs
+        idx = self._get_src_permutation_idx(indices)
+        src_moments = outputs['pred_moments'][idx]
+        target_moments = torch.cat([t['moments'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+
+        # Compute L1 loss for the moments
+        loss_moments_l1 = F.l1_loss(src_moments, target_moments, reduction='none')
+        loss_moments = loss_moments_l1.sum() / num_boxes
+        
+        return loss_moments
+    
+    def loss_moments_kl(self, outputs, targets, indices, num_boxes):
+        """Compute the losses related to the moments, specifically using KL divergence
+        targets dicts must contain the key "moments" containing a tensor of dim [nb_target_boxes, 5]
+        with each row being [cx, cy, mu11, mu20, mu02].
+        """
+        assert 'pred_moments' in outputs
+        idx = self._get_src_permutation_idx(indices)
+        src_moments = outputs['pred_moments'][idx]
+        
+        #TODO
+        if src_moments.shape[0] == 0:
+            print("WARNING! No boxes in the batch")
+            return torch.tensor(0.0, device=src_moments.device)
+        
+        target_moments = torch.cat([t['moments'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        
+        src_moments = moment_ops.denormalize_moments(src_moments)
+        target_moments = moment_ops.denormalize_moments(target_moments)
+
+        # Split the moments into their respective components
+        mu_src = src_moments[:, :2]  # Extracting [cx, cy]
+        mu_tgt = target_moments[:, :2]
+        
+        # Constructing the covariance matrices from the moments
+        Sigma_src = moment_ops.moments_to_cov(src_moments[:, 2:])
+        Sigma_tgt = moment_ops.moments_to_cov(target_moments[:, 2:])
+
+        # Compute KL divergence for each pair of predicted and target distribution
+        kl_divergences = [moment_ops.kl_divergence(mu_src[i], Sigma_src[i], mu_tgt[i], Sigma_tgt[i]) 
+                                    for i in range(mu_src.shape[0])]
+        
+        if not kl_divergences:
+            print("WARNING! We should have a non-empty tensor list ")
+            return torch.tensor(0.0, device=src_moments.device)
+        
+        kl_divergences = torch.stack(kl_divergences)
+        loss_kl = kl_divergences.sum() / num_boxes
+
+        return loss_kl
 
     def loss_masks(self, outputs, targets, indices, num_boxes):
         """Compute the losses related to the masks: the focal loss and the dice loss.
@@ -320,7 +388,7 @@ class SetCriterion(nn.Module):
         loss_map = {
             'labels': self.loss_labels,
             'cardinality': self.loss_cardinality,
-            'boxes': self.loss_boxes,
+            'moments': self.loss_moments,
             'masks': self.loss_masks
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
@@ -390,7 +458,7 @@ class SetCriterion(nn.Module):
 
 class PostProcess(nn.Module):
     """ This module converts the model's output into the format expected by the coco api"""
-    def __init__(self, method='topk'):
+    def __init__(self, method='topk', min_values=None, max_values=None):
         super().__init__()
         if method is None:
             method = 'topk'
@@ -399,6 +467,9 @@ class PostProcess(nn.Module):
         self.fn = dict(topk=postprocess_topk,
                        label_topk=postprocess_label_topk,
                        label=postprocess_label)[method]
+        
+        self.min_values = min_values
+        self.max_values = max_values
 
     @torch.no_grad()
     def forward(self, outputs, target_sizes):
@@ -409,19 +480,27 @@ class PostProcess(nn.Module):
                           For evaluation, this must be the original image size (before any data augmentation)
                           For visualization, this should be the image size after data augment, but before padding
         """
-        out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
+        out_logits, out_moments = outputs['pred_logits'], outputs['pred_moments']
 
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
        
-        boxes, labels, scores = self.fn(outputs)
+        moments, labels, scores = self.fn(outputs)
 
         # and from relative [0, 1] to absolute [0, height] coordinates
+        # rescale centroids (cx, cy)
         img_h, img_w = target_sizes.unbind(1)
-        scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1).to(boxes.device)
-        boxes = boxes * scale_fct[:, None, :]
+        
+        scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1).to(moments.device)
+        moments[..., :2] = moments[..., :2] * scale_fct[:, None, :2]
 
-        results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
+        min_values = torch.tensor(MOMENT_MIN_VALUES, dtype=torch.float32, device=moments.device) 
+        max_values = torch.tensor(MOMENT_MAX_VALUES, dtype=torch.float32, device=moments.device)
+
+        # Rescale central moments (mu11, mu20, mu02)
+        moments[..., 2:] = moments[..., 2:] * (max_values - min_values) + min_values
+
+        results = [{'scores': s, 'labels': l, 'moments': m} for s, l, m in zip(scores, labels, moments)]
 
         return results
     
@@ -431,20 +510,19 @@ def postprocess_topk(outputs):
     We have modified it so that k is one third of the number of queries, rather than 100.
     """
     out_logits = outputs['pred_logits']
-    out_bbox = outputs['pred_boxes']
+    out_moments = outputs['pred_moments']
     prob = out_logits.sigmoid()
     k    = int(out_logits.size(-2) // 3)
     topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), k, dim=1)
     scores = topk_values
-    topk_boxes = topk_indexes // out_logits.shape[2]
+    topk_moments = topk_indexes // out_logits.shape[2]
     labels = topk_indexes % out_logits.shape[2]
-    boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
-    boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1,1,4))
-    return boxes, labels, scores
+    moments = torch.gather(out_moments, 1, topk_moments.view(-1, k, 1).repeat(1, 1, out_moments.shape[-1]))
+    return moments, labels, scores
 
 def postprocess_label_topk(outputs):
     out_logits = outputs['pred_logits']
-    out_bbox = outputs['pred_boxes']
+    out_moments = outputs['pred_moments']
     prob = out_logits.sigmoid()
     
     # get score and label of each query
@@ -456,23 +534,21 @@ def postprocess_label_topk(outputs):
     # gather
     labels = torch.gather(labels, 1, topk_indices)
     scores = torch.gather(scores, 1, topk_indices)
-    boxes  = torch.gather(out_bbox, 1, topk_indices.view(-1,k,1).repeat(1,1,4))
+    moments = torch.gather(out_moments, 1, topk_indices.view(-1, k, 1).repeat(1,1,5))
     
     # convert format
-    boxes = box_ops.box_cxcywh_to_xyxy(boxes)
-    return boxes, labels, scores
+    #boxes = box_ops.box_cxcywh_to_xyxy(boxes)
+    return moments, labels, scores
 
 def postprocess_label(outputs):
     out_logits = outputs['pred_logits']
-    out_bbox = outputs['pred_boxes']
+    out_moments = outputs['pred_moments']
     prob = out_logits.sigmoid()
     
     # get score and label of each query
     scores, labels  = prob.max(-1)
     
-    # convert format
-    boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
-    return boxes, labels, scores
+    return out_moments, labels, scores
 
 
 class MLP(nn.Module):
