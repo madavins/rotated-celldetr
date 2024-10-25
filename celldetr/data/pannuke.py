@@ -91,7 +91,7 @@ def build_pannuke_dataset(cfg, split='train'):
                                transforms=transforms)
     # wrap dataset for transforms v2
     dataset = datasets.wrap_dataset_for_transforms_v2(dataset,
-                                target_keys=('image_id','boxes','labels'))
+                                target_keys=('all'))
     return dataset
 
 def pannuke2coco(data_dir, fold, out_dir):

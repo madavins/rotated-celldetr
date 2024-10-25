@@ -5,12 +5,15 @@ from skimage import color
 
 import torch
 import torch.nn as nn
+import cv2
 
 import torchvision.transforms.v2 as v2
 from torchvision.transforms.v2 import functional as F
 from torchvision.transforms.v2._utils import _get_fill, _setup_fill_arg
 
 from ..util.box_ops import normalize_box, denormalize_box
+from ..util.moment_ops import normalize_moments, denormalize_moments
+from celldetr.util.constants import MOMENT_MAX_VALUES, VARIANCE_THRESHOLD
 
 def build_transforms(cfg, is_train=True):
     transforms = [v2.ToImage()]
@@ -38,6 +41,17 @@ def build_transforms(cfg, is_train=True):
     transforms.append(v2.Normalize(mean=mean, std=std))
     # bounding box normalization
     transforms.append(NormalizeBoundingBoxes())
+
+    transforms.append(MaskToMoments())
+
+    # moments sanity check
+    transforms.append(FilterMoments(variance_threshold=VARIANCE_THRESHOLD))
+
+    # clamp moments: 0 - max values
+    transforms.append(ClampMoments(max_values=MOMENT_MAX_VALUES))
+
+    # min-max normalization based on clamped values
+    transforms.append(NormalizeMoments())
 
     return v2.Compose(transforms)
 
@@ -205,3 +219,92 @@ class RandomApply(v2.Transform):
         for t in self.transforms:
             format_string.append(f"    {t}")
         return "\n".join(format_string)
+    
+
+class MaskToMoments(torch.nn.Module):
+    def forward(self, image, target):
+        if 'masks' in target:
+            masks = target['masks']
+            moments_list = []
+            for mask in masks:
+                moments = self._moments(mask)
+                # Ensure that moments is always a list of floats
+                moments_list.append(moments if isinstance(moments, list) else moments.tolist())
+            # Safely create a tensor from a uniformly formatted list
+            target['moments'] = torch.tensor(moments_list, dtype=torch.float32) if moments_list else torch.zeros(0, 5)
+        return image, target
+
+    def _moments(self, mask):
+        mask = mask.detach().cpu().numpy()
+        moments = cv2.moments(mask, binaryImage=True)
+        if moments['m00'] == 0: 
+            return [0.0, 0.0, 0.0, 0.0, 0.0]
+        cx = moments['m10'] / moments['m00']
+        cy = moments['m01'] / moments['m00']
+        mu11 = moments['mu11'] / moments['m00']
+        mu20 = moments['mu20'] / moments['m00']
+        mu02 = moments['mu02'] / moments['m00']
+
+        return [cx, cy, mu11, mu20, mu02]
+
+class NormalizeMoments(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, image, target):
+        h, w = image.shape[-2], image.shape[-1]
+        if 'moments' in target:
+            moments = copy.deepcopy(target['moments']).float()
+            target['moments'] = normalize_moments(moments, w, h)
+        return image, target
+
+class DenormalizeMoments(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, image, target):
+        h, w = image.shape[-2], image.shape[-1]
+        if 'moments' in target:
+            moments = copy.deepcopy(target['moments'])
+            target['moments'] = denormalize_moments(moments, w, h)
+        return image, target
+
+class FilterMoments:
+    def __init__(self, variance_threshold=1):
+        self.variance_threshold = variance_threshold
+
+    def __call__(self, image, target):
+        moments = target['moments']
+        mu20 = moments[:, 3]
+        mu02 = moments[:, 4]
+
+        # Create a mask for valid moments based on variance threshold
+        valid_mask = (mu20 >= self.variance_threshold) & (mu02 >= self.variance_threshold)
+
+        # Filter moments
+        target['moments'] = moments[valid_mask]
+        target['labels'] = target['labels'][valid_mask]
+        target['masks'] = target['masks'][valid_mask]
+        target['boxes'] = target['boxes'][valid_mask]
+
+        return image, target
+
+class ClampMoments:
+    def __init__(self, max_values):
+        self.max_values = max_values
+
+    def __call__(self, image, target):
+        moments = target['moments']
+        cx = moments[:, 0]
+        cy = moments[:, 1]
+        mu11 = moments[:, 2]
+        mu20 = moments[:, 3]
+        mu02 = moments[:, 4]
+
+        # Clamp moments
+        mu11 = torch.clamp(mu11, -self.max_values[0], self.max_values[0])
+        mu20 = torch.clamp(mu20, 0, self.max_values[1])
+        mu02 = torch.clamp(mu02, 0, self.max_values[2])
+
+        target['moments'] = torch.stack([cx, cy, mu11, mu20, mu02], dim=-1)
+        return image, target
