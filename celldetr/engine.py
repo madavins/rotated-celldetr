@@ -20,7 +20,7 @@ import torch
 import celldetr.util.misc as utils
 from celldetr.util.distributed import is_main_process, get_rank, reduce_dict, all_gather
 from celldetr.eval import CocoEvaluator, CellDetectionMetric
-from celldetr.util import box_ops as box_ops
+from celldetr.util import moment_ops
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -120,19 +120,11 @@ def evaluate_detection(model, criterion, postprocessors, data_loader, device, th
 
         # postprocess predictions
         orig_target_sizes = torch.stack([data_loader.dataset.image_size(image_id=t["image_id"]) for t in targets], dim=0)
-        predictions = postprocessors['bbox'](outputs, orig_target_sizes)
+        predictions = postprocessors['moments'](outputs, orig_target_sizes)
         
-        # prepare predictions
-        for p in predictions:
-            # convert boxes
-            p['boxes'] = box_ops.box_xyxy_to_cxcywh(p['boxes'])
-
-        # prepare targets
+        #Denormalize targets
         for t in targets:
-            # get image size
-            img_h, img_w = data_loader.dataset.image_size(image_id=t["image_id"])
-            # convert boxes
-            t['boxes'] = box_ops.denormalize_box(t['boxes'], (img_h, img_w))
+            t['moments'] = moment_ops.denormalize_moments(t['moments'])
         
         # update metrics
         for k in metrics:
