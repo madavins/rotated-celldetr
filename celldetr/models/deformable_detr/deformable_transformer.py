@@ -159,7 +159,7 @@ class DeformableTransformer(nn.Module):
 
             # hack implementation for two-stage Deformable DETR
             enc_outputs_class = self.decoder.class_embed[self.decoder.num_layers](output_memory)
-            enc_outputs_coord_unact = self.decoder.bbox_embed[self.decoder.num_layers](output_memory) + output_proposals
+            enc_outputs_coord_unact = self.decoder.moment_embed[self.decoder.num_layers](output_memory) + output_proposals
 
             topk = self.two_stage_num_proposals
             topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
@@ -319,7 +319,7 @@ class DeformableTransformerDecoder(nn.Module):
         self.num_layers = num_layers
         self.return_intermediate = return_intermediate
         # hack implementation for iterative bounding box refinement and two-stage Deformable DETR
-        self.bbox_embed = None
+        self.moment_embed = None
         self.class_embed = None
 
     def forward(self, tgt, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
@@ -329,27 +329,33 @@ class DeformableTransformerDecoder(nn.Module):
         intermediate = []
         intermediate_reference_points = []
         for lid, layer in enumerate(self.layers):
-            if reference_points.shape[-1] == 4:
-                reference_points_input = reference_points[:, :, None] \
-                                         * torch.cat([src_valid_ratios, src_valid_ratios], -1)[:, None]
+            if reference_points.shape[-1] == 5:
+                spatial_reference = reference_points[:, :, :2]  # Get only cetroid predictions [B, Nq, 2]
+                # Scale centroids (it makes sense to scale spatial coordinates (cx,cy) by valid spatial ratios for the image, but not the moments)
+                scaled_spatial = spatial_reference[:, :, None] * src_valid_ratios[:, None] # [B, Nq, L, 2]
+                #Dim problems:
+                moments = reference_points[:, :, 2:] # [B, Nq, 3]
+                expanded_moments = moments.unsqueeze(2).expand(-1, -1, src_valid_ratios.shape[1], -1) # [B, Nq, L, 3]
+                reference_points_input = torch.cat([scaled_spatial, expanded_moments], dim=-1) # [B, Nq, L, 5]
             else:
                 assert reference_points.shape[-1] == 2
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
+            
             output = layer(output, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index, src_padding_mask)
 
             # hack implementation for iterative bounding box refinement
-            if self.bbox_embed is not None:
-                tmp = self.bbox_embed[lid](output)
-                if reference_points.shape[-1] == 4:
+            if self.moment_embed is not None:
+                tmp = self.moment_embed[lid](output)
+                if reference_points.shape[-1] == 5:
                     new_reference_points = tmp + inverse_sigmoid(reference_points)
                     new_reference_points = new_reference_points.sigmoid()
                 else:
                     assert reference_points.shape[-1] == 2
-                    new_reference_points = tmp
+                    new_reference_points = tmp 
                     new_reference_points[..., :2] = tmp[..., :2] + inverse_sigmoid(reference_points)
                     new_reference_points = new_reference_points.sigmoid()
                 reference_points = new_reference_points.detach()
-
+                
             if self.return_intermediate:
                 intermediate.append(output)
                 intermediate_reference_points.append(reference_points)
