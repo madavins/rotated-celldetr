@@ -232,6 +232,7 @@ class MaskToMoments(torch.nn.Module):
                 moments_list.append(moments if isinstance(moments, list) else moments.tolist())
             # Safely create a tensor from a uniformly formatted list
             target['moments'] = torch.tensor(moments_list, dtype=torch.float32) if moments_list else torch.zeros(0, 5)
+            del target['masks']
         return image, target
 
     def _moments(self, mask):
@@ -284,7 +285,7 @@ class FilterMoments:
         # Filter moments
         target['moments'] = moments[valid_mask]
         target['labels'] = target['labels'][valid_mask]
-        target['masks'] = target['masks'][valid_mask]
+        #target['masks'] = target['masks'][valid_mask]
         target['boxes'] = target['boxes'][valid_mask]
 
         return image, target
