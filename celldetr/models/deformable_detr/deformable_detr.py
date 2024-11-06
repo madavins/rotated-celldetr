@@ -98,18 +98,18 @@ class DeformableDETR(nn.Module):
         if with_box_refine:
             self.class_embed = _get_clones(self.class_embed, num_pred)
             self.moment_embed = _get_clones(self.moment_embed, num_pred)
-            nn.init.constant_(self.moment_embed[0].layers[-1].bias.data[2:], 0.0) #-2.0 (original implementation) or 0.0 for initial moments?
+            nn.init.constant_(self.moment_embed[0].layers[-1].bias.data[2:], 0.0) #-2.0 (original implementation) or 0.0 for initial moments? //TODO
             # hack implementation for iterative bounding box refinement
             self.transformer.decoder.moment_embed = self.moment_embed
         else:
-            nn.init.constant_(self.moment_embed.layers[-1].bias.data[2:], -2.0) #Should this change? Investigate further //TODO
+            nn.init.constant_(self.moment_embed.layers[-1].bias.data[2:], 0.0) # -2.0 Should this change? Investigate further //TODO
             self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
             self.moment_embed = nn.ModuleList([self.moment_embed for _ in range(num_pred)])
             self.transformer.decoder.moment_embed = None
         if two_stage:
             # hack implementation for two-stage
             self.transformer.decoder.class_embed = self.class_embed
-            for moment_embed in self.moment_embed_embed:
+            for moment_embed in self.moment_embed:
                 nn.init.constant_(moment_embed.layers[-1].bias.data[2:], 0.0) #Should this change? Investigate further //TODO
 
     def forward(self, samples: NestedTensor):
@@ -189,7 +189,7 @@ class DeformableDETR(nn.Module):
 
         if self.two_stage:
             enc_outputs_coord = enc_outputs_coord_unact.sigmoid()
-            out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_boxes': enc_outputs_coord}
+            out['enc_outputs'] = {'pred_logits': enc_outputs_class, 'pred_moments': enc_outputs_coord}
         return out
 
     @torch.jit.unused

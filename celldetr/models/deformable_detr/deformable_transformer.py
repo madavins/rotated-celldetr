@@ -50,6 +50,7 @@ class DeformableTransformer(nn.Module):
             self.enc_output_norm = nn.LayerNorm(d_model)
             self.pos_trans = nn.Linear(d_model * 2, d_model * 2)
             self.pos_trans_norm = nn.LayerNorm(d_model * 2)
+            self.pos_embed_proj = nn.Linear(5 * 128, d_model * 2) # Instead of 4*128=512, we need to use 5*128=640, which is problematic in terms of dimensions
         else:
             self.reference_points = nn.Linear(d_model, 2)
 
@@ -69,22 +70,23 @@ class DeformableTransformer(nn.Module):
 
     def get_proposal_pos_embed(self, proposals):
         num_pos_feats = 128
+        #num_pos_feats = 102 -> this does not solve the mat mul dimension issue.
         temperature = 10000
         scale = 2 * math.pi
 
         dim_t = torch.arange(num_pos_feats, dtype=torch.float32, device=proposals.device)
         dim_t = temperature ** (2 * (dim_t // 2) / num_pos_feats)
-        # N, L, 4
+        # N, L, 5
         proposals = proposals.sigmoid() * scale
-        # N, L, 4, 128
+        # N, L, 5, 128
         pos = proposals[:, :, :, None] / dim_t
-        # N, L, 4, 64, 2
+        # N, L, 5, 64, 2
         pos = torch.stack((pos[:, :, :, 0::2].sin(), pos[:, :, :, 1::2].cos()), dim=4).flatten(2)
+        pos = self.pos_embed_proj(pos)
         return pos
 
     def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
         N_, S_, C_ = memory.shape
-        base_scale = 4.0
         proposals = []
         _cur = 0
         for lvl, (H_, W_) in enumerate(spatial_shapes):
@@ -94,12 +96,16 @@ class DeformableTransformer(nn.Module):
 
             grid_y, grid_x = torch.meshgrid(torch.linspace(0, H_ - 1, H_, dtype=torch.float32, device=memory.device),
                                             torch.linspace(0, W_ - 1, W_, dtype=torch.float32, device=memory.device))
-            grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1)
-
+            grid = torch.cat([grid_x.unsqueeze(-1), grid_y.unsqueeze(-1)], -1) # Grid creation: (H_, W_, 2)
             scale = torch.cat([valid_W.unsqueeze(-1), valid_H.unsqueeze(-1)], 1).view(N_, 1, 1, 2)
             grid = (grid.unsqueeze(0).expand(N_, -1, -1, -1) + 0.5) / scale
-            wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl)
-            proposal = torch.cat((grid, wh), -1).view(N_, -1, 4)
+            
+            #wh = torch.ones_like(grid) * 0.05 * (2.0 ** lvl) //Original impl wh -> (w, h) -> proposal: (cx, cy, w, h)
+            spread = torch.ones_like(grid) * 0.05 * (2.0 ** lvl) # Same formula, different meaning (maintained because is a good initialization -> larger spread for deeper levels)
+            mu11 = torch.zeros_like(grid[..., :1]) # Correlation term: initialitzed to 0 -> no correlation
+            mu20 = mu02 = spread[..., :1] # Equal spread in x and y directions
+            
+            proposal = torch.cat(([grid, mu11, mu20, mu02]), -1).view(N_, -1, 5)
             proposals.append(proposal)
             _cur += (H_ * W_)
         output_proposals = torch.cat(proposals, 1)
@@ -163,7 +169,7 @@ class DeformableTransformer(nn.Module):
 
             topk = self.two_stage_num_proposals
             topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
-            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+            topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 5))
             topk_coords_unact = topk_coords_unact.detach()
             reference_points = topk_coords_unact.sigmoid()
             init_reference_out = reference_points

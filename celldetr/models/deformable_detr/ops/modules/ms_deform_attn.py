@@ -103,12 +103,15 @@ class MSDeformAttn(nn.Module):
             offset_normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
             sampling_locations = reference_points[:, :, None, :, None, :] \
                                  + sampling_offsets / offset_normalizer[None, None, None, :, None, :]
+        # Sampling locations based on moments (4 and 5) corresponding to the predicted x and y variances. 
+        # TODO: Study the effect of adding covariance information to the sampling locations.
+        # TODO: We should remove the 0.5 scaling (intended for w and h of BB).
         elif reference_points.shape[-1] == 5:
             sampling_locations = reference_points[:, :, None, :, None, :2] \
-                                 + sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 2:-1] * 0.5
+                                 + sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 3:] * 0.5
         else:
             raise ValueError(
-                'Last dim of reference_points must be 2 or 4, but get {} instead.'.format(reference_points.shape[-1]))
+                'Last dim of reference_points must be 2 or 5, but get {} instead.'.format(reference_points.shape[-1]))
         output = MSDeformAttnFunction.apply(
             value, input_spatial_shapes, input_level_start_index, sampling_locations, attention_weights, self.im2col_step)
         output = self.output_proj(output)
