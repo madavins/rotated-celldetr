@@ -83,6 +83,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 @torch.no_grad()
 def evaluate_detection(model, criterion, postprocessors, data_loader, device, thresholds=[0.5]):
+    torch.cuda.empty_cache()
     model.eval()
     criterion.eval()
 
