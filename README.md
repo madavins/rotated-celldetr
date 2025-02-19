@@ -6,13 +6,12 @@ This repository contains the code for Rotated Cell-DETR, an extension of [Cell-D
 
 The main novelty that we introduce is that we achieve the oriented detections without requiring explicit oriented bounding box annotations during training. Instead, we leverage available segmentation masks (common in cell detection datasets such as PanNuke) and extract image moments (centroid, variances, and covariance) to represent the shape and orientation of each cell.  These moments are then used as targets for a modified loss function based on the KL-divergence which is then used for training an adapted version of the DETR architecture to predict oriented bounding boxes.
 
-For a more detailed explanation of the methodology, experiments and results, please see the full report:
+For a more detailed explanation of the methodology, experiments and results, please see the full report: [Report](rotated_celldetr_report.pdf)
 
-[Report](rotated_celldetr_report.pdf)
-
-<img src="resources/det_examples.png" alt="Example detections" width="500"/>
-
-*Examples with predicted oriented bounding boxes in blue and ground truth oriented bounding boxes in red.*
+<div align="center">
+    <img src="resources/det_examples.png" alt="Example detections" width="600"/>
+    <p><em>Examples with predicted oriented bounding boxes in blue and ground truth oriented bounding boxes in red.</em></p>
+</div>
 
 ## Table of Contents
 
