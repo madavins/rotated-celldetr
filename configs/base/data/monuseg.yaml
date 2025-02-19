@@ -1,3 +1,0 @@
-name: monuseg
-root: /path/to/monuseg/
-num_classes: 1

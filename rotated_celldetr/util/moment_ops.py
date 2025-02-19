@@ -1,20 +1,7 @@
-# ------------------------------------------------------------------------
-# Deformable DETR
-# Copyright (c) 2020 SenseTime. All Rights Reserved.
-# Licensed under the Apache License, Version 2.0 [see LICENSE for details]
-# ------------------------------------------------------------------------
-# Modified from DETR (https://github.com/facebookresearch/detr)
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
-# ------------------------------------------------------------------------
-
-"""
-Utilities for moment manipulation, normalization and KL divergence.
-"""
 import torch
-from torchvision.ops.boxes import box_area
 import numpy as np
 from math import sin, cos, radians
-from celldetr.util.constants import MOMENT_MIN_VALUES, MOMENT_MAX_VALUES
+from rotated_celldetr.util.constants import MOMENT_MIN_VALUES, MOMENT_MAX_VALUES
 
 
 def box_moments_to_xyxy(x):

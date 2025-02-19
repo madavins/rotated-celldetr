@@ -13,7 +13,7 @@ from torchvision.transforms.v2._utils import _get_fill, _setup_fill_arg
 
 from ..util.box_ops import normalize_box, denormalize_box
 from ..util.moment_ops import normalize_moments, denormalize_moments
-from celldetr.util.constants import MOMENT_MAX_VALUES, VARIANCE_THRESHOLD
+from rotated_celldetr.util.constants import MOMENT_MAX_VALUES, VARIANCE_THRESHOLD
 
 def build_transforms(cfg, is_train=True):
     transforms = [v2.ToImage()]

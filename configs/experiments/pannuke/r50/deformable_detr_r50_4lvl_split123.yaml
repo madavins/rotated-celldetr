@@ -24,7 +24,7 @@ dataset:
     fold: fold3
 transforms:
   augmentations:
-    __file__: configs/base/data/augmentations/orient_geo_hed.yaml
+    __file__: configs/base/data/augmentations/orient_geo_hed_rotated.yaml
   normalize:
     __file__: configs/base/data/normalize/pannuke_1.yaml
 model:

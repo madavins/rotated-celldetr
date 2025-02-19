@@ -17,10 +17,10 @@ from typing import Iterable
 
 import torch
 
-import celldetr.util.misc as utils
-from celldetr.util.distributed import is_main_process, get_rank, reduce_dict, all_gather
-from celldetr.eval import CocoEvaluator, CellDetectionMetric
-from celldetr.util import moment_ops
+import rotated_celldetr.util.misc as utils
+from rotated_celldetr.util.distributed import is_main_process, get_rank, reduce_dict, all_gather
+from rotated_celldetr.eval import CocoEvaluator, CellDetectionMetric
+from rotated_celldetr.util import moment_ops
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,

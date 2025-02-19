@@ -10,12 +10,12 @@ from collections import OrderedDict
 
 import sys
 sys.path.append('../celldetr')
-from celldetr.util.distributed import init_distributed_mode, save_on_master, is_main_process, get_rank
-from celldetr.util.misc import seed_everything
-from celldetr.util.config import ConfigDict
-from celldetr.data import build_dataset, build_loader
-from celldetr.models import build_model, load_state_dict
-from celldetr.engine import train_one_epoch, evaluate_detection, evaluate
+from rotated_celldetr.util.distributed import init_distributed_mode, save_on_master, is_main_process, get_rank
+from rotated_celldetr.util.misc import seed_everything
+from rotated_celldetr.util.config import ConfigDict
+from rotated_celldetr.data import build_dataset, build_loader
+from rotated_celldetr.models import build_model, load_state_dict
+from rotated_celldetr.engine import train_one_epoch, evaluate_detection, evaluate
 
 import wandb
 

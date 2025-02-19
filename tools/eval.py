@@ -9,13 +9,12 @@ from collections import OrderedDict
 
 import sys
 sys.path.append('../celldetr')
-from celldetr.util.distributed import init_distributed_mode, get_rank
-from celldetr.util.misc import seed_everything
-from celldetr.util.config import ConfigDict
-from celldetr.data import build_dataset, build_loader
-from celldetr.models import build_model
-from celldetr.models.window import wrap_window_detr, WindowDETR
-from celldetr.engine import evaluate_detection
+from rotated_celldetr.util.distributed import init_distributed_mode, get_rank
+from rotated_celldetr.util.misc import seed_everything
+from rotated_celldetr.util.config import ConfigDict
+from rotated_celldetr.data import build_dataset, build_loader
+from rotated_celldetr.models import build_model
+from rotated_celldetr.engine import evaluate_detection
 
 def test(cfg):
     # init distributed mode
