@@ -1,13 +1,24 @@
-# Cell-DETR: Efficient cell detection and classification in WSIs with transformers
+# Rotated Cell-DETR: Cell detection with oriented bounding boxes
 
 ## Description
 
-Cell-DETR is a novel approach for efficient cell detection and classification in Whole Slide Images (WSIs) using transformers. Unlike traditional segmentation methods, Cell-DETR focuses on detecting and classifying nuclei, crucial for understanding cell interactions and distributions. With state-of-the-art performance on established benchmarks, our method enables scalable diagnosis pipelines by significantly reducing computational burdens and achieving x3.4 faster inference times on large WSI datasets.
+This repository contains the code for Rotated Cell-DETR, an extension of [Cell-DETR](https://github.com/oscar97pina/celldetr) that performs cell nuclei detection in histopathology images using oriented bounding boxes. Traditional object detection methods use axis-aligned bounding boxes, which are often not precise enough to capture the shape and orientation of elongated or irregularly shaped cells.  Rotated Cell-DETR addresses this by predicting oriented bounding boxes, which provide a more concise localization of the cell.
+
+The main novelty that we introduce is that we achieve the oriented detections without requiring explicit oriented bounding box annotations during training. Instead, we leverage available segmentation masks (common in cell detection datasets such as PanNuke) and extract image moments (centroid, variances, and covariance) to represent the shape and orientation of each cell.  These moments are then used as targets for a modified loss function based on the KL-divergence which is then used for training an adapted version of the DETR architecture to predict oriented bounding boxes.
+
+For a more detailed explanation of the methodology, experiments and results, please see the full report:
+
+[Report](rotated_celldetr_report.pdf)
+
+<img src="resources/det_examples.png" alt="Example detections" width="500"/>
+
+*Examples with predicted oriented bounding boxes in blue and ground truth oriented bounding boxes in red.*
 
 ## Table of Contents
 
 - [Installation](#installation)
 - [Usage](#usage)
+- [Acknowledgements](#acknowledgements)
 - [License](#license)
 
 ## Installation
@@ -42,69 +53,52 @@ cd celldetr/models/deformable_detr/ops
 
 ### Project structure
 ```bash
-celldetr/
+rotated_celldetr/
 |-- tools/                   # Contains scripts for training, evaluation, and inference
 |   |-- train.py             # Training on COCO format dataset
 |   |-- eval.py              # Evaluation on COCO format dataset
-|   |-- infer.py             # Inference on WSIs
-|-- eval/                    # Evaluation module for evaluating model performance (COCO and Cell detection)
+|-- eval/                    # Evaluation module for evaluating model performance
 |-- util/                    # Utility functions and modules used throughout the project
 |-- data/                    # Datasets, transforms and augmentations for cell detection
 |-- models/                  # Deep learning models used in CellDetr
 |   |-- deformable_detr/     # Implementation of Deformable DETR model
-|   |-- window/              # Implementation of window-based DETR model
 |   |-- backbone/            # Backbone networks used in the models
 |-- engine.py                # Main engine script for coordinating the training and evaluation process
 
 ```
-### Configuration files
-The entire code is based on yaml configuration files. You can find an explanation of how they work in [config.md](docs/config.md).
-- In the [configs/base/](configs/base/) folder you can find default configurations for the datasets, loss functions, model architectures, and others.
-- In the [configs/experiments/](configs/experiments/) folder you can find the configuration files for the experiments reported in the paper.
 
-If you want to use your own data, models, or others, consider writing the re-usable independent configuration pieces such as datasets into [configs/base/](configs/base/) and then the configuration for your experiments in [configs/experiments/](configs/experiments/).
+Key modifications to the original Cell-DETR codebase include:
 
-### Pre-trained models
-The pre-trained model we provide for inference is trained on 80% of PanNuke, taking samples from each of the folds. The detection F1-Score corresponds to the remaining 20% of the data.
+*   `rotated_celldetr/data/transforms.py`:  The `MaskToMoments` transform extracts image moments from segmentation masks.
+*   `rotated_celldetr/util/moment_ops.py`:  Functions for handling image moments and calculating the KL-divergence loss.
+*   `rotated_celldetr/eval/celldet_eval.py`:  The `CellDetectionMetric` calculates the Rotated Intersection over Union (IoU) metric.
+*   `rotated_celldetr/models/deformable_detr/`:  Modifications to the model to predict moments and use the KL-divergence loss.
 
-| Backbone | Backbone levels | DETR levels | F1-det | config | weights |
-|----------|----------|----------|----------|----------|----------|
-|   Swin-L  |   4  |  4  |   83.06  |   [config](configs/public/deformable_detr_swinL_4lvl_pannuke.yaml)  | [weights](https://drive.google.com/file/d/13ud0-KD2f70p7x_c4WdtWXvLR-0YFVaH) |
+### Training and Testing
 
-### Training and testing
-For training and testing, you must create a configuration file in which you specify basic configuration of the [experiment](docs/experiment.md), the [dataset](docs/dataset.md), the [model](docs/model.md), the loss and the [loaders](docs/). You can find an example on [configs/experiments/pannuke/swin/deformable_detr_swinL_35lvl_split123.yaml](configs/experiments/pannuke/swin/deformable_detr_swinL_35lvl_split123.yaml). To run the training, we recommend creating your own configuration file, in which you'll have the modify the data directory and model checkpoints, and run:
+1.  **Data preparation:** The code expects data in COCO format.  We primarily use the PanNuke dataset.  You can use the provided scripts in `rotated_celldetr/data/` (specifically `pannuke.py`) to convert the PanNuke dataset to COCO format.
 
-```bash
-python3 -m torch.distributed.launch --use-env --nproc-per-node=NUM_GPUs tools/train.py \
-                        --config-file /path/to/config/file
-```
+2.  **Training:** Use the `tools/train.py` script.  Create a configuration file in `configs/experiments/` that inherits from the base configurations and specifies your desired settings.
 
-Alternatively, you could also modify the paths from the command line:
+    ```bash
+    python -m torch.distributed.launch --use-env --nproc-per-node=2 tools/train.py \
+        --config-file configs/experiments/pannuke/rotated_deformable_detr_swinL_4lvl_split123.yaml \
+    ```
 
-```bash
-python3 -m torch.distributed.launch --use-env --nproc-per-node=NUM_GPUs tools/train.py \
-                        --config-file /path/to/config/file \
-                        --opts dataset.train.root=/path/to/dataset/ \
-                               dataset.val.root=/path/to/dataset/ \
-                               dataset.test.root=/path/to/dataset/ \
-                               model.checkpoint=/path/to/checkpoint \
-                               model.backbone.checkpoint=/path/to/backbone/checkpoint
-```
+3.  **Evaluation:** Use the `tools/eval.py` script with the *same* configuration file used for training:
 
-Testing is based on the same configuration file that has been used for training, but calling the [tools/eval.py](tools/eval.py) script rather than the training one. Note that for the evaluation, the training must have been run previously and ended successfully. Now, the checkpoints specified to the model and backbone configurations will be ignored, but the output checkpoint will be used when initializing the model.
+    ```bash
+    python -m torch.distributed.launch --use-env --nproc-per-node=2 tools/eval.py \
+        --config-file configs/experiments/pannuke/rotated_deformable_detr_swinL_4lvl_split123.yaml \
+    ```
 
-### Inference on WSIs
-Inference on WSIs is very easy! You just need to create a configuration file that extends (with ```__base__```) an existing configuration file used for training your model, and then include the configuration for the WSI, the model window parameters (for window detection) and the ```infer``` loader configuration. See [docs/inference.md](docs/inference.md). You can find an example here for a slide of the camelyon dataset [configs/camelyon/deformable_detr_swinL.yaml](configs/experiments/camelyon/deformable_detr_swinL_4lvl.yaml).
+    The script will load the trained model from the `output_dir` specified in your configuration file.
 
-Then, running is as easy as:
+## Acknowledgements
 
-```bash
-python3 -m torch.distributed.launch --use-env --nproc-per-node=NUM_GPUs tools/infer.py \
-                        --config-file /path/to/config/file
-```
+This work builds upon [Cell-DETR](https://github.com/oscar97pina/celldetr) by Oscar Pina, who has also supervised this work.
 
 ## Citation
-If you find this work helpful in your research, please consider citing us:
 ```bash
 @inproceedings{
        pina2024celldetr,
