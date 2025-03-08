@@ -1,7 +1,5 @@
 # Rotated Cell-DETR: Cell detection with oriented bounding boxes
 
-## Description
-
 This repository contains the code for Rotated Cell-DETR, an extension of [Cell-DETR](https://github.com/oscar97pina/celldetr) that performs cell nuclei detection in histopathology images using oriented bounding boxes. Traditional object detection methods use axis-aligned bounding boxes, which are often not precise enough to capture the shape and orientation of elongated or irregularly shaped cells.  Rotated Cell-DETR addresses this by predicting oriented bounding boxes, which provide a more concise localization of the cell.
 
 The main novelty that we introduce is that we achieve the oriented detections without requiring explicit oriented bounding box annotations during training. Instead, we leverage available segmentation masks (common in cell detection datasets such as PanNuke) and extract image moments (centroid, variances, and covariance) to represent the shape and orientation of each cell.  These moments are then used as targets for a modified loss function based on the KL-divergence which is then used for training an adapted version of the DETR architecture to predict oriented bounding boxes.
